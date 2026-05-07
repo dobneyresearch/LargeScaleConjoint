@@ -1,0 +1,17 @@
+{
+  "attributes": [
+    {"name": "star_rating",  "levels": 5},
+    {"name": "price_band",   "levels": 4},
+    {"name": "location",     "levels": 3},
+    {"name": "amenities",    "levels": 4},
+    {"name": "review_score", "levels": 3}
+  ],
+  "grid_rows": 10,
+  "grid_cols":  5,
+  "mcmc": {
+    "iterations": 4000,
+    "burn_in":    1500,
+    "adapt_every": 50,
+    "target_accept": 0.234
+  }
+}
