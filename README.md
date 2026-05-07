@@ -1,2 +1,222 @@
 # LargeScaleConjoint
 Codebase for running and analysing large scale conjoint projects
+
+Hierarchical Bayes estimation for large-scale scroll-based conjoint analysis.
+
+Rather than asking respondents to choose between a small number of designed profiles, this framework presents a large naturalistic display (50+ items) and records free-form responses: liked, disliked, or neutral. Scroll position data resolves which items were actually seen, so neutral observations are genuinely informative rather than a mixture of unseen and indifferent. A second stage asks respondents to pick their preferred item from the liked set.
+
+The framework estimates three separate models from this data:
+
+- **Selection model** — what drives an item into the consideration set (positive-constrained part-worths)
+- **Rejection model** — what drives active rejection (positive-constrained repulsion weights)
+- **Stage-2 model** — preference ordering within the consideration set (unconstrained part-worths)
+
+Estimating selection and rejection separately reflects the psychological reality that these are different processes. The split naturally produces a Kano-style classification of attributes without a separate study: attributes that appear in the selection model but not the rejection model are *attractive* features; those appearing only in the rejection model are *must-be* hygiene factors; those in both are *one-dimensional*.
+
+A horseshoe prior on population means handles large attribute sets efficiently, shrinking genuinely inactive attributes toward zero without penalising those that drive choice. Population-level pairwise interaction terms are estimated jointly under a second horseshoe prior.
+
+An equivalent PHP implementation is also available (`scroll_conjoint_hb.php`) and produces identical output file formats.
+
+---
+
+## Installation
+
+```bash
+pip install -r requirements.txt
+```
+
+Python 3.10 or later recommended. No other dependencies.
+
+---
+
+## Quick Start
+
+Generate synthetic test data, then run the estimation:
+
+```bash
+python scroll_conjoint_data.py
+python scroll_conjoint_hb.py
+```
+
+This produces four output files in the current directory:
+`hb_selection_betas.csv`, `hb_rejection_betas.csv`, `hb_stage2_betas.csv`, `hb_population.csv`.
+
+---
+
+## Files
+
+| File | Purpose |
+|---|---|
+| `scroll_conjoint_hb.py` | Main HB estimation script |
+| `scroll_conjoint_data.py` | Synthetic data generator for testing |
+| `scroll_conjoint_config.json` | Design specification |
+| `requirements.txt` | Python dependencies |
+
+---
+
+## Usage
+
+```bash
+python scroll_conjoint_hb.py \
+  --config    scroll_conjoint_config.json \
+  --catalogue scroll_catalogue.csv \
+  --responses scroll_responses.csv \
+  --out_dir   ./results \
+  --seed      42
+```
+
+### Options
+
+| Option | Default | Description |
+|---|---|---|
+| `--config` | `scroll_conjoint_config.json` | Design specification |
+| `--catalogue` | `scroll_catalogue.csv` | Item attribute levels |
+| `--responses` | `scroll_responses.csv` | Respondent responses with scroll data |
+| `--out_dir` | `.` | Directory for output files |
+| `--seed` | `42` | Random seed for reproducibility |
+| `--iters` | from config | Override MCMC iteration count |
+| `--burn_in` | from config | Override burn-in length |
+
+---
+
+## Input File Formats
+
+### `scroll_conjoint_config.json`
+
+Defines the attribute structure, display grid dimensions, and MCMC settings.
+
+```json
+{
+  "attributes": [
+    {"name": "star_rating",  "levels": 5},
+    {"name": "price_band",   "levels": 4},
+    {"name": "location",     "levels": 3},
+    {"name": "amenities",    "levels": 4},
+    {"name": "review_score", "levels": 3}
+  ],
+  "grid_rows": 10,
+  "grid_cols": 5,
+  "mcmc": {
+    "iterations": 4000,
+    "burn_in": 1500,
+    "adapt_every": 50,
+    "target_accept": 0.234
+  }
+}
+```
+
+`levels` is the number of discrete levels for each attribute. Level values in the data are 0-based integers. There is no constraint on the number of attributes or levels, but estimation becomes slower and requires more respondents as the total parameter count (`K = sum of levels - 1`) grows.
+
+### `scroll_catalogue.csv`
+
+One row per item in the display catalogue. Attribute columns are named `att0_level`, `att1_level`, etc., corresponding to the order of attributes in the config.
+
+```
+item_id, att0_level, att1_level, att2_level, att3_level, att4_level
+I001,    3,          1,          2,          2,          1
+I002,    1,          0,          0,          3,          2
+...
+```
+
+Level values are 0-based. Each item represents a concrete product or option with a fixed combination of attribute levels. For naturally described items (e.g. real hotel listings), map textual descriptions to concept IDs before encoding here — phrasing variation within a concept is treated as measurement noise.
+
+### `scroll_responses.csv`
+
+One row per item shown to each respondent, plus one additional `chosen` marker row per respondent who made a stage-2 selection. All items shown on a respondent's screen should be included, including those below the scroll point.
+
+```
+respondent_id, item_id, position_row, position_col, scroll_rows_visible, response
+R001,          I047,    0,            2,            8,                   liked
+R001,          I012,    1,            0,            8,                   neutral
+R001,          I083,    1,            4,            8,                   disliked
+R001,          I091,    7,            1,            8,                   unseen
+...
+R001,          I047,    ,             ,             8,                   chosen
+```
+
+**Columns:**
+
+| Column | Type | Description |
+|---|---|---|
+| `respondent_id` | string | Unique respondent identifier |
+| `item_id` | string | Must match a row in the catalogue |
+| `position_row` | int | 0-based row in the display grid (empty for the `chosen` marker row) |
+| `position_col` | int | 0-based column in the display grid (empty for the `chosen` marker row) |
+| `scroll_rows_visible` | int | Number of grid rows the respondent scrolled to see. Items with `position_row >= scroll_rows_visible` are structurally excluded from the likelihood. |
+| `response` | string | `liked`, `disliked`, `neutral`, `unseen`, or `chosen` |
+
+**Response values:**
+
+- `liked` — respondent positively selected this item in stage 1
+- `disliked` — respondent negatively selected this item in stage 1
+- `neutral` — item was visible but neither liked nor disliked
+- `unseen` — item was below the scroll point; excluded from the likelihood
+- `chosen` — the item selected in stage 2 (preferred from the liked set). Written as a separate row with empty position fields. The same item also appears as `liked` in its positional row. If no stage-2 choice was made, omit this row.
+
+---
+
+## Output File Formats
+
+All output files use the same column naming convention: `att{i}_{name}_l{level}` where `i` is the 0-based attribute index, `name` is the attribute name from the config, and `level` is the 0-based effects-coded parameter index (there are `n_levels - 1` parameters per attribute under effects coding).
+
+### `hb_selection_betas.csv` / `hb_rejection_betas.csv` / `hb_stage2_betas.csv`
+
+Individual-level posterior mean part-worths, one row per respondent. The first data row (labelled `POPULATION`) contains the population-level horseshoe posterior means.
+
+```
+respondent_id, att0_star_rating_l0, att0_star_rating_l1, ..., accept_rate
+POPULATION,    0.628,               0.551,               ...,
+R001,          0.741,               0.603,               ..., 0.21
+R002,          0.412,               0.388,               ..., 0.19
+```
+
+`accept_rate` is the Metropolis-Hastings acceptance rate during the post-burn-in phase. Values below 0.10 or above 0.50 suggest the step size adaptation did not converge; increase `iterations` or adjust `target_accept`.
+
+Selection and rejection betas are positive-constrained (they represent the magnitude of attraction or repulsion respectively). Stage-2 betas are unconstrained.
+
+### `hb_population.csv`
+
+Population-level summary across all three models, including interaction terms.
+
+```
+type,        parameter,                              sel_value, rej_value, s2_value
+main,        att0_star_rating_l0,                   0.628,     0.337,     0.185
+...
+threshold,   tau,                                    0.611,     1.606,
+interaction, int_att0_star_rating__att1_price_band,  0.000,     0.000,     -0.022
+```
+
+`type` is `main`, `threshold`, or `interaction`. Interaction parameters near zero indicate the horseshoe prior has identified no meaningful cross-attribute effect for that pair.
+
+---
+
+## Interpreting Estimates
+
+**Effects coding:** Part-worths use effects coding (sum-to-zero constraint). For a K-level attribute, K−1 parameters are estimated directly; the final level's utility is their negated sum. Higher positive values indicate stronger preference (selection) or stronger aversion (rejection) for that level relative to the attribute mean.
+
+**Kano classification:** Compare population-level selection and rejection alphas for each attribute. Attributes with substantial selection alpha and near-zero rejection alpha are *attractive* (delighters). Those with near-zero selection and substantial rejection alpha are *must-be* hygiene factors. Both substantial: *one-dimensional*. Both near-zero: *indifferent*.
+
+**Horseshoe shrinkage:** The global shrinkage parameter `tau_sq` reported at program exit summarises how sparse the estimated population is. Small values (< 0.1) indicate most attributes are near-zero and the horseshoe is doing significant work. Large values (> 1.0) suggest most attributes carry signal.
+
+**Stage-2 vs selection betas:** The stage-2 model conditions on the consideration set, so it estimates finer-grained preference *within* liked items. Attributes that are hygiene factors (everyone expects them) may appear strongly in the rejection model but weakly in stage 2 because there is little variation in them within the liked set.
+
+---
+
+## Sample Size Guidance
+
+| Target | Minimum respondents |
+|---|---|
+| Main effects, K ≤ 20 | 150–200 |
+| Main effects, K = 30–50 | 300–500 |
+| Population interactions (~50 active pairs) | 300–400 |
+| 4–5 implicit segments (post-hoc clustering) | 400+ |
+
+These assume approximately 30 visible items per respondent on average. More visible items per screen reduce the respondent requirement; fewer increase it. Stage-2 estimates require at least 2 liked items per respondent; respondents with empty liked sets contribute only to the selection and rejection models.
+
+---
+
+## Limitations
+
+- Individual-level interaction effects are not estimated — only population-level interactions shared across all respondents. Estimating individual interactions would require many more observations per person than a single screen provides.
+- The selection and rejection models are fitted as independent binary logits. In reality a respondent cannot simultaneously like and dislike the same item, but modelling this joint constraint adds complexity for limited practical benefit.
+- Scroll endogeneity is not modelled: respondents who dislike early items tend to scroll further, so items near the bottom of the page are seen disproportionately by respondents with low overall utility for the catalogue. If item ordering is under experimental control, randomising positions across respondents mitigates this.
